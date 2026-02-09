@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# === базовый PATH для minimal Debian ===
+export PATH=$PATH:/sbin:/usr/sbin:/bin:/usr/bin
+
 USER_NAME=$(logname)
 HOME_DIR="/home/$USER_NAME"
 
@@ -8,13 +11,21 @@ echo "== Установка пакетов =="
 apt update
 apt install -y xorg chromium unclutter x11-xserver-utils
 
-echo "== Отключение sleep/hibernate на уровне systemd =="
+echo "== Отключение sleep/hibernate =="
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 
-echo "== Настройки Xorg: отключение гашения экрана =="
-mkdir -p /etc/X11/xorg.conf.d
+mkdir -p /etc/systemd/logind.conf.d
+cat >/etc/systemd/logind.conf.d/nosleep.conf <<EOF
+[Login]
+HandleLidSwitch=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+HandlePowerKey=ignore
+EOF
 
-cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'EOF'
+echo "== Отключение гашения экрана Xorg =="
+mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-monitor.conf <<EOF
 Section "ServerFlags"
     Option "BlankTime" "0"
     Option "StandbyTime" "0"
@@ -37,10 +48,16 @@ else
     URL=$DEFAULT_URL
 fi
 
-# отключаем энергосбережение X
+sleep 3
+
 xset s off
 xset -dpms
 xset s noblank
+
+xrandr --auto
+xrandr --output HDMI-1 --auto 2>/dev/null
+xrandr --output HDMI-0 --auto 2>/dev/null
+xrandr --output eDP-1 --auto 2>/dev/null
 
 unclutter -idle 0 -root &
 
@@ -48,30 +65,33 @@ while true
 do
   chromium \
     --kiosk \
+    --start-fullscreen \
+    --start-maximized \
+    --window-position=0,0 \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \
-    --check-for-update-interval=31536000 \
+    --disable-translate \
     "$URL"
 
-  sleep 3
+  sleep 2
 done
 EOF
 
 chmod +x /usr/local/bin/kiosk.sh
 
-echo "== Команда смены URL =="
+echo "== смена URL =="
 
 cat >/usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
 echo "$1" | sudo tee /etc/kiosk_url
-echo "URL обновлён. Перезапусти киоск:"
-echo "sudo systemctl restart getty@tty1"
+echo "URL обновлён. Перезапусти:"
+echo "reboot"
 EOF
 
 chmod +x /usr/local/bin/kiosk-set-url
 
-echo "== Показ IP =="
+echo "== показать IP =="
 
 cat >/usr/local/bin/kiosk-ip <<'EOF'
 #!/bin/bash
@@ -80,7 +100,7 @@ EOF
 
 chmod +x /usr/local/bin/kiosk-ip
 
-echo "== Статический IP =="
+echo "== статический IP =="
 
 cat >/usr/local/bin/kiosk-set-static-ip <<'EOF'
 #!/bin/bash
@@ -100,8 +120,7 @@ iface $IFACE inet static
     dns-nameservers $DNS
 EOT"
 
-echo "IP задан. Перезагрузи:"
-echo "reboot"
+echo "IP задан. reboot"
 EOF
 
 chmod +x /usr/local/bin/kiosk-set-static-ip
@@ -110,13 +129,13 @@ echo "== .xinitrc =="
 
 cat >"$HOME_DIR/.xinitrc" <<'EOF'
 #!/bin/bash
-/usr/local/bin/kiosk.sh
+exec /usr/local/bin/kiosk.sh
 EOF
 
 chown $USER_NAME:$USER_NAME "$HOME_DIR/.xinitrc"
 chmod +x "$HOME_DIR/.xinitrc"
 
-echo "== Автостарт X =="
+echo "== автозапуск X =="
 
 cat >"$HOME_DIR/.bash_profile" <<'EOF'
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
@@ -126,7 +145,7 @@ EOF
 
 chown $USER_NAME:$USER_NAME "$HOME_DIR/.bash_profile"
 
-echo "== Автологин =="
+echo "== автологин tty1 =="
 
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 
@@ -143,12 +162,12 @@ echo
 echo "Сменить URL:"
 echo "sudo kiosk-set-url http://IP:PORT/"
 echo
-echo "Показать IP:"
+echo "IP терминала:"
 echo "kiosk-ip"
 echo
 echo "Статический IP:"
 echo "sudo kiosk-set-static-ip 192.168.1.50 192.168.1.1"
 echo
 echo "Перезагрузка:"
-echo "reboot"
+echo "/sbin/reboot"
 echo "======================================"
