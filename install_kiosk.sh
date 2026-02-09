@@ -1,49 +1,84 @@
 #!/bin/bash
+
 set -e
-export PATH=$PATH:/sbin:/usr/sbin:/bin:/usr/bin
 
-USER_NAME=$(logname)
-HOME_DIR="/home/$USER_NAME"
+echo "=== Установка kiosk режима ==="
 
-echo "== install packages =="
+KIOSK_URL_DEFAULT="http://192.168.202.206:5173/"
+KIOSK_USER="user"
+
+# --- пакеты ---
 apt update
-apt install -y xorg chromium unclutter x11-xserver-utils
+apt install -y \
+    xorg \
+    xinit \
+    chromium \
+    unclutter \
+    curl \
+    x11-xserver-utils
 
-echo "== allow X for systemd =="
-cat >/etc/X11/Xwrapper.config <<EOF
-allowed_users=anybody
-needs_root_rights=yes
+# --- папки ---
+mkdir -p /opt/kiosk
+
+# --- offline страница ---
+cat >/opt/kiosk/offline.html <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Нет связи</title>
+<style>
+body{
+    margin:0;
+    background:#111;
+    color:#fff;
+    font-family:Arial, sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    height:100vh;
+    text-align:center;
+}
+.box{
+    max-width:600px;
+}
+h1{
+    font-size:48px;
+    margin-bottom:30px;
+}
+button{
+    font-size:28px;
+    padding:20px 40px;
+    border:none;
+    border-radius:10px;
+    background:#2e7dff;
+    color:white;
+}
+</style>
+</head>
+<body>
+<div class="box">
+<h1>Нет связи с климатическим компьютером</h1>
+<button onclick="location.reload()">Обновить страницу</button>
+</div>
+</body>
+</html>
 EOF
 
-echo "== disable sleep =="
-systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+# --- URL конфиг ---
+if [ ! -f /etc/kiosk_url ]; then
+    echo "$KIOSK_URL_DEFAULT" >/etc/kiosk_url
+fi
 
-mkdir -p /etc/systemd/logind.conf.d
-cat >/etc/systemd/logind.conf.d/nosleep.conf <<EOF
-[Login]
-HandleLidSwitch=ignore
-HandleSuspendKey=ignore
-HandleHibernateKey=ignore
-HandlePowerKey=ignore
-EOF
-
-echo "== disable screen blank =="
-mkdir -p /etc/X11/xorg.conf.d
-cat >/etc/X11/xorg.conf.d/10-monitor.conf <<EOF
-Section "ServerFlags"
-    Option "BlankTime" "0"
-    Option "StandbyTime" "0"
-    Option "SuspendTime" "0"
-    Option "OffTime" "0"
-EndSection
-EOF
-
-echo "== kiosk script =="
+# --- kiosk.sh ---
 cat >/usr/local/bin/kiosk.sh <<'EOF'
 #!/bin/bash
 
 URL_FILE="/etc/kiosk_url"
 DEFAULT_URL="http://192.168.202.206:5173/"
+OFFLINE="/opt/kiosk/offline.html"
+
 [ -f "$URL_FILE" ] && URL=$(cat $URL_FILE) || URL=$DEFAULT_URL
 
 sleep 3
@@ -57,74 +92,61 @@ xset s noblank
 
 unclutter -idle 0 -root &
 
+check_server() {
+    curl -Is --max-time 3 "$URL" >/dev/null 2>&1
+}
+
 while true
 do
-  chromium --kiosk --start-maximized "$URL"
-  sleep 2
+    if check_server; then
+        chromium \
+            --kiosk \
+            --start-maximized \
+            --noerrdialogs \
+            --disable-infobars \
+            --disable-session-crashed-bubble \
+            "$URL"
+    else
+        chromium \
+            --kiosk \
+            --start-maximized \
+            "file://$OFFLINE"
+    fi
+    sleep 3
 done
 EOF
 
 chmod +x /usr/local/bin/kiosk.sh
 
-echo "== systemd kiosk service =="
-cat >/etc/systemd/system/kiosk.service <<EOF
-[Unit]
-Description=Kiosk
-After=systemd-user-sessions.service network.target
+# --- .xinitrc ---
+cat >/home/$KIOSK_USER/.xinitrc <<'EOF'
+#!/bin/bash
+exec /usr/local/bin/kiosk.sh
+EOF
 
+chmod +x /home/$KIOSK_USER/.xinitrc
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.xinitrc
+
+# --- автологин systemd ---
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+
+cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
 [Service]
-User=$USER_NAME
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=$HOME_DIR/.Xauthority
-ExecStart=/usr/bin/startx /usr/local/bin/kiosk.sh -- :0
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $KIOSK_USER --noclear %I \$TERM
 EOF
 
-echo "== URL command =="
-cat >/usr/local/bin/kiosk-set-url <<'EOF'
-#!/bin/bash
-echo "$1" | sudo tee /etc/kiosk_url
-echo "reboot"
+# --- автостарт X ---
+cat >>/home/$KIOSK_USER/.bash_profile <<'EOF'
+
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+    startx
+fi
 EOF
-chmod +x /usr/local/bin/kiosk-set-url
 
-echo "== show IP command =="
-cat >/usr/local/bin/kiosk-ip <<'EOF'
-#!/bin/bash
-hostname -I
-EOF
-chmod +x /usr/local/bin/kiosk-ip
-
-echo "== static IP command =="
-cat >/usr/local/bin/kiosk-set-static-ip <<'EOF'
-#!/bin/bash
-IP=$1
-GW=$2
-DNS=${3:-8.8.8.8}
-IFACE=$(ip route | grep default | awk '{print $5}')
-
-sudo bash -c "cat >/etc/network/interfaces.d/$IFACE <<EOT
-auto $IFACE
-iface $IFACE inet static
- address $IP
- netmask 255.255.255.0
- gateway $GW
- dns-nameservers $DNS
-EOT"
-
-echo reboot
-EOF
-chmod +x /usr/local/bin/kiosk-set-static-ip
-
-echo "== enable service =="
-systemctl daemon-reload
-systemctl enable kiosk.service
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.bash_profile
 
 echo
-echo "INSTALL COMPLETE"
-echo "Reboot required:"
-echo "/sbin/reboot"
+echo "=== ГОТОВО ==="
+echo "Перезагрузи систему:"
+echo "reboot"
