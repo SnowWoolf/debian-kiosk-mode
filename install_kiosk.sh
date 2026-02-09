@@ -73,11 +73,16 @@ do
     --kiosk \
     --start-fullscreen \
     --start-maximized \
-    --window-position=0,0 \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \
     --disable-translate \
+    --disable-pinch \
+    --overscroll-history-navigation=0 \
+    --disable-features=TranslateUI \
+    --hide-scrollbars \
+    --ash-hide-cursor \
+    --force-device-scale-factor=1 \
     "$URL"
 
   sleep 2
