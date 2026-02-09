@@ -1,151 +1,156 @@
 #!/bin/bash
-
 set -e
 
-echo "=== Установка kiosk режима ==="
+KIOSK_URL="http://192.168.203.8"   # <-- адрес климатического ПК
 
-KIOSK_URL_DEFAULT="http://192.168.202.206:5173/"
-KIOSK_USER="user"
+echo "== Установка kiosk режима =="
 
-# --- пакеты ---
 apt update
 apt install -y \
     xorg \
-    xinit \
+    openbox \
     chromium \
     unclutter \
-    curl \
-    x11-xserver-utils
+    x11-xserver-utils \
+    wget \
+    curl
 
-# --- папки ---
 mkdir -p /opt/kiosk
+mkdir -p /home/user/.config/openbox
+mkdir -p /home/user/.config/chromium
 
-# --- offline страница ---
-cat >/opt/kiosk/offline.html <<'EOF'
+############################################
+# HTML заглушка при отсутствии сервера
+############################################
+cat >/opt/kiosk/offline.html <<EOF
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Нет связи</title>
+<meta http-equiv="refresh" content="10">
 <style>
 body{
-    margin:0;
-    background:#111;
-    color:#fff;
-    font-family:Arial, sans-serif;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    height:100vh;
-    text-align:center;
-}
-.box{
-    max-width:600px;
-}
-h1{
-    font-size:48px;
-    margin-bottom:30px;
+background:#000;
+color:#fff;
+font-family:Arial;
+display:flex;
+justify-content:center;
+align-items:center;
+height:100vh;
+flex-direction:column;
 }
 button{
-    font-size:28px;
-    padding:20px 40px;
-    border:none;
-    border-radius:10px;
-    background:#2e7dff;
-    color:white;
+font-size:30px;
+padding:20px 40px;
+margin-top:40px;
 }
 </style>
 </head>
 <body>
-<div class="box">
 <h1>Нет связи с климатическим компьютером</h1>
 <button onclick="location.reload()">Обновить страницу</button>
-</div>
 </body>
 </html>
 EOF
 
-# --- URL конфиг ---
-if [ ! -f /etc/kiosk_url ]; then
-    echo "$KIOSK_URL_DEFAULT" >/etc/kiosk_url
-fi
-
-# --- kiosk.sh ---
+############################################
+# KIOSK SCRIPT
+############################################
 cat >/usr/local/bin/kiosk.sh <<'EOF'
 #!/bin/bash
 
-URL_FILE="/etc/kiosk_url"
-DEFAULT_URL="http://192.168.202.206:5173/"
-OFFLINE="/opt/kiosk/offline.html"
+URL="http://192.168.203.8"
 
-[ -f "$URL_FILE" ] && URL=$(cat $URL_FILE) || URL=$DEFAULT_URL
+# Ждём X
+sleep 2
 
-sleep 3
+# Определяем дисплей
+DISPLAY=:0
+export DISPLAY
 
-OUTPUT=$(xrandr | grep " connected" | head -n1 | cut -d" " -f1)
-xrandr --output "$OUTPUT" --auto
+# Берём первый подключенный монитор
+MON=$(xrandr | grep " connected" | head -n1 | cut -d" " -f1)
 
-xset -dpms
+# Ставим нативное разрешение
+MODE=$(xrandr | grep "*" | head -n1 | awk '{print $1}')
+xrandr --output "$MON" --mode "$MODE"
+
+# Убираем энергосбережение
 xset s off
+xset -dpms
 xset s noblank
 
+# Прячем курсор
 unclutter -idle 0 -root &
 
-check_server() {
-    curl -Is --max-time 3 "$URL" >/dev/null 2>&1
-}
+while true; do
 
-while true
-do
-    if check_server; then
+    if ping -c1 -W1 192.168.203.8 >/dev/null; then
         chromium \
-            --kiosk \
-            --start-maximized \
-            --noerrdialogs \
-            --disable-infobars \
-            --disable-session-crashed-bubble \
-            "$URL"
+          --kiosk \
+          --noerrdialogs \
+          --disable-infobars \
+          --disable-session-crashed-bubble \
+          --disable-restore-session-state \
+          --incognito \
+          --start-fullscreen \
+          --window-position=0,0 \
+          --window-size=1920,1080 \
+          "$URL"
     else
         chromium \
-            --kiosk \
-            --start-maximized \
-            "file://$OFFLINE"
+          --kiosk \
+          --incognito \
+          --start-fullscreen \
+          file:///opt/kiosk/offline.html
     fi
-    sleep 3
+
+    sleep 2
 done
 EOF
 
 chmod +x /usr/local/bin/kiosk.sh
 
-# --- .xinitrc ---
-cat >/home/$KIOSK_USER/.xinitrc <<'EOF'
-#!/bin/bash
-exec /usr/local/bin/kiosk.sh
+############################################
+# Openbox autostart
+############################################
+cat >/home/user/.config/openbox/autostart <<EOF
+/usr/local/bin/kiosk.sh
 EOF
 
-chmod +x /home/$KIOSK_USER/.xinitrc
-chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.xinitrc
+chown -R user:user /home/user/.config
 
-# --- автологин systemd ---
-mkdir -p /etc/systemd/system/getty@tty1.service.d
+############################################
+# .xinitrc
+############################################
+cat >/home/user/.xinitrc <<EOF
+exec openbox-session
+EOF
 
-cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
+chown user:user /home/user/.xinitrc
+
+############################################
+# Автостарт X
+############################################
+cat >/etc/systemd/system/kiosk.service <<EOF
+[Unit]
+Description=Kiosk
+After=systemd-user-sessions.service
+
 [Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $KIOSK_USER --noclear %I \$TERM
+User=user
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/startx
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-# --- автостарт X ---
-cat >>/home/$KIOSK_USER/.bash_profile <<'EOF'
-
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    startx
-fi
-EOF
-
-chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.bash_profile
+systemctl daemon-reexec
+systemctl enable kiosk.service
 
 echo
-echo "=== ГОТОВО ==="
-echo "Перезагрузи систему: /sbin/reboot"
+echo "===== ГОТОВО ====="
+echo "Перезагрузи систему:"
+echo "reboot"
