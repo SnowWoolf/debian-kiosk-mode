@@ -157,4 +157,4 @@ EOF
 
 echo
 echo "READY"
-echo "reboot"
+echo "Выполни /sbin/reboot"
