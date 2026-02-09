@@ -3,23 +3,21 @@ set -e
 
 KIOSK_URL="[http://192.168.202.206:5173/](http://192.168.202.206:5173/)"
 
-echo "Installing packages..."
+echo "=== install packages ==="
 apt-get update
-apt-get install -y xorg openbox lightdm chromium unclutter xdotool curl openssh-server
+apt-get install -y xorg openbox lightdm chromium unclutter curl
 
-systemctl enable ssh
-
-echo "Creating user..."
+echo "=== create user ==="
 id kiosk &>/dev/null || useradd -m -s /bin/bash kiosk
 mkdir -p /home/kiosk/.config/openbox
 chown -R kiosk:kiosk /home/kiosk
 
-echo "Writing config..."
+echo "=== save url ==="
 cat > /etc/kiosk.conf <<EOF
 KIOSK_URL="$KIOSK_URL"
 EOF
 
-echo "LightDM config..."
+echo "=== lightdm config ==="
 cat > /etc/lightdm/lightdm.conf <<EOF
 [Seat:*]
 autologin-user=kiosk
@@ -27,65 +25,41 @@ autologin-session=openbox
 xserver-command=X -nocursor -nolisten tcp
 EOF
 
-echo "Openbox autostart..."
+echo "=== openbox autostart ==="
 cat > /home/kiosk/.config/openbox/autostart <<'EOF'
 #!/bin/bash
 
-setxkbmap -option terminate:ctrl_alt_bksp
-unclutter -idle 0 -root &
-
-systemctl --user start kiosk.service
-EOF
-
-chown kiosk:kiosk /home/kiosk/.config/openbox/autostart
-chmod +x /home/kiosk/.config/openbox/autostart
-
-echo "Systemd user service..."
-mkdir -p /home/kiosk/.config/systemd/user
-
-cat > /home/kiosk/.config/systemd/user/kiosk.service <<'EOF'
-[Unit]
-Description=Kiosk Browser
-After=graphical-session.target
-
-[Service]
-ExecStart=/usr/local/bin/kiosk.sh
-Restart=always
-
-[Install]
-WantedBy=default.target
-EOF
-
-chown -R kiosk:kiosk /home/kiosk/.config/systemd
-
-echo "Watchdog script..."
-cat > /usr/local/bin/kiosk.sh <<'EOF'
-#!/bin/bash
 source /etc/kiosk.conf
+
+unclutter -idle 0 -root &
 
 while true
 do
+echo "waiting for server $KIOSK_URL"
 until curl -s --max-time 2 "$KIOSK_URL" > /dev/null; do
-echo "Waiting for server..."
 sleep 5
 done
 
-chromium 
---kiosk "$KIOSK_URL" 
---noerrdialogs 
---disable-infobars 
---disable-session-crashed-bubble 
---disable-translate 
---start-maximized
+```
+chromium \
+    --kiosk "$KIOSK_URL" \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-session-crashed-bubble \
+    --disable-translate \
+    --start-maximized
 
-echo "Chromium crashed. Restarting..."
+echo "chromium crashed → restart"
 sleep 2
+```
+
 done
 EOF
 
-chmod +x /usr/local/bin/kiosk.sh
+chmod +x /home/kiosk/.config/openbox/autostart
+chown -R kiosk:kiosk /home/kiosk
 
-echo "Command to change URL..."
+echo "=== command to change url ==="
 cat > /usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
 if [ -z "$1" ]; then
@@ -94,12 +68,15 @@ exit 1
 fi
 
 sudo sed -i "s|KIOSK_URL=.*|KIOSK_URL="$1"|" /etc/kiosk.conf
+echo "URL changed to $1"
 sudo systemctl restart lightdm
 EOF
 
 chmod +x /usr/local/bin/kiosk-set-url
 
-echo "Enabling user service..."
-sudo -u kiosk systemctl --user daemon-reload || true
+echo "=== enable lightdm ==="
+systemctl enable lightdm
 
-echo "Done. Reboot now."
+echo
+echo "INSTALL DONE"
+echo "reboot system"
