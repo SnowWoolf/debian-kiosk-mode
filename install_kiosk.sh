@@ -56,7 +56,7 @@ xrandr --output "$OUTPUT" --auto
 
 sleep 2
 
-unclutter -idle 0 -root &
+unclutter -idle 0.01 -root -grab -visible false &
 
 while true
 do
