@@ -7,7 +7,13 @@ HOME_DIR="/home/$USER_NAME"
 
 echo "== install packages =="
 apt update
-apt install -y xorg openbox chromium unclutter x11-xserver-utils
+apt install -y xorg chromium unclutter x11-xserver-utils
+
+echo "== allow X for systemd =="
+cat >/etc/X11/Xwrapper.config <<EOF
+allowed_users=anybody
+needs_root_rights=yes
+EOF
 
 echo "== disable sleep =="
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
@@ -32,67 +38,53 @@ Section "ServerFlags"
 EndSection
 EOF
 
-echo "== hide cursor (hard) =="
-
-cat >/etc/X11/xorg.conf.d/99-hide-cursor.conf <<EOF
-Section "InputClass"
-    Identifier "HideCursor"
-    MatchIsPointer "on"
-    Option "CursorVisible" "false"
-EndSection
-EOF
-
 echo "== kiosk script =="
-
 cat >/usr/local/bin/kiosk.sh <<'EOF'
 #!/bin/bash
 
 URL_FILE="/etc/kiosk_url"
 DEFAULT_URL="http://192.168.202.206:5173/"
-
 [ -f "$URL_FILE" ] && URL=$(cat $URL_FILE) || URL=$DEFAULT_URL
 
-# ждём X
-sleep 4
+sleep 3
 
-# отключаем энергосбережение
-xset s off
-xset -dpms
-xset s noblank
-
-# фиксируем разрешение
 OUTPUT=$(xrandr | grep " connected" | head -n1 | cut -d" " -f1)
 xrandr --output "$OUTPUT" --auto
 
-sleep 2
+xset -dpms
+xset s off
+xset s noblank
 
+unclutter -idle 0 -root &
 
 while true
 do
-  chromium \
-    --kiosk \
-    --start-fullscreen \
-    --start-maximized \
-    --noerrdialogs \
-    --disable-infobars \
-    --disable-session-crashed-bubble \
-    --disable-translate \
-    --disable-pinch \
-    --overscroll-history-navigation=0 \
-    --disable-features=TranslateUI \
-    --hide-scrollbars \
-    --ash-hide-cursor \
-    --force-device-scale-factor=1 \
-    "$URL"
-
+  chromium --kiosk --start-maximized "$URL"
   sleep 2
 done
 EOF
 
 chmod +x /usr/local/bin/kiosk.sh
 
-echo "== URL command =="
+echo "== systemd kiosk service =="
+cat >/etc/systemd/system/kiosk.service <<EOF
+[Unit]
+Description=Kiosk
+After=systemd-user-sessions.service network.target
 
+[Service]
+User=$USER_NAME
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=$HOME_DIR/.Xauthority
+ExecStart=/usr/bin/startx /usr/local/bin/kiosk.sh -- :0
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "== URL command =="
 cat >/usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
 echo "$1" | sudo tee /etc/kiosk_url
@@ -100,16 +92,14 @@ echo "reboot"
 EOF
 chmod +x /usr/local/bin/kiosk-set-url
 
-echo "== IP command =="
-
+echo "== show IP command =="
 cat >/usr/local/bin/kiosk-ip <<'EOF'
 #!/bin/bash
 hostname -I
 EOF
 chmod +x /usr/local/bin/kiosk-ip
 
-echo "== static ip =="
-
+echo "== static IP command =="
 cat >/usr/local/bin/kiosk-set-static-ip <<'EOF'
 #!/bin/bash
 IP=$1
@@ -130,45 +120,11 @@ echo reboot
 EOF
 chmod +x /usr/local/bin/kiosk-set-static-ip
 
-echo "== openbox autostart =="
-
-mkdir -p $HOME_DIR/.config/openbox
-
-cat >$HOME_DIR/.config/openbox/autostart <<'EOF'
-#!/bin/bash
-/usr/local/bin/kiosk.sh
-EOF
-
-chown -R $USER_NAME:$USER_NAME $HOME_DIR/.config
-
-echo "== startx =="
-
-cat >$HOME_DIR/.xinitrc <<'EOF'
-#!/bin/bash
-exec openbox-session
-EOF
-
-chown $USER_NAME:$USER_NAME $HOME_DIR/.xinitrc
-
-echo "== autostart X =="
-
-cat >$HOME_DIR/.bash_profile <<'EOF'
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  startx
-fi
-EOF
-
-chown $USER_NAME:$USER_NAME $HOME_DIR/.bash_profile
-
-echo "== autologin =="
-
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
-EOF
+echo "== enable service =="
+systemctl daemon-reload
+systemctl enable kiosk.service
 
 echo
-echo "READY"
-echo "Выполни /sbin/reboot"
+echo "INSTALL COMPLETE"
+echo "Reboot required:"
+echo "/sbin/reboot"
