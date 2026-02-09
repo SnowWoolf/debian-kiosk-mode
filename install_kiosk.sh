@@ -8,7 +8,7 @@ apt-get update
 apt-get install -y xorg openbox lightdm chromium unclutter curl
 
 echo "=== create user ==="
-id kiosk &>/dev/null || useradd -m -s /bin/bash kiosk
+id kiosk &>/dev/null || /sbin/useradd -m -s /bin/bash kiosk
 mkdir -p /home/kiosk/.config/openbox
 chown -R kiosk:kiosk /home/kiosk
 
