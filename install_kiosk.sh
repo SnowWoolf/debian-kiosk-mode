@@ -125,7 +125,7 @@ EOF
 cat > /usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
 echo "$1" > /opt/kiosk/url
-reboot
+/sbin/reboot
 EOF
 
 chmod +x /usr/local/bin/kiosk-set-url
