@@ -1,99 +1,130 @@
 #!/bin/bash
+set -e
+export PATH=$PATH:/sbin:/usr/sbin:/bin:/usr/bin
 
-TARGET_URL="http://192.168.203.86:8080"
-USER_NAME="user"
+USER_NAME=$(logname)
+HOME_DIR="/home/$USER_NAME"
 
-echo "=== Установка kiosk режима ==="
-
+echo "== install packages =="
 apt update
-apt install -y xorg xinit chromium unclutter xdotool
+apt install -y xorg chromium unclutter x11-xserver-utils
 
-# автологин в tty1
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-
-cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
+echo "== allow X for systemd =="
+cat >/etc/X11/Xwrapper.config <<EOF
+allowed_users=anybody
+needs_root_rights=yes
 EOF
 
-# автозапуск X
-cat >/home/$USER_NAME/.bash_profile <<'EOF'
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  startx
-fi
+echo "== disable sleep =="
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+
+mkdir -p /etc/systemd/logind.conf.d
+cat >/etc/systemd/logind.conf.d/nosleep.conf <<EOF
+[Login]
+HandleLidSwitch=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+HandlePowerKey=ignore
 EOF
 
-chown $USER_NAME:$USER_NAME /home/$USER_NAME/.bash_profile
+echo "== disable screen blank =="
+mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-monitor.conf <<EOF
+Section "ServerFlags"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+EOF
 
-# .xinitrc
-cat >/home/$USER_NAME/.xinitrc <<'EOF'
+echo "== kiosk script =="
+cat >/usr/local/bin/kiosk.sh <<'EOF'
 #!/bin/bash
+
+URL_FILE="/etc/kiosk_url"
+DEFAULT_URL="http://192.168.202.206:5173/"
+[ -f "$URL_FILE" ] && URL=$(cat $URL_FILE) || URL=$DEFAULT_URL
+
+sleep 3
+
+OUTPUT=$(xrandr | grep " connected" | head -n1 | cut -d" " -f1)
+xrandr --output "$OUTPUT" --auto
 
 xset -dpms
 xset s off
 xset s noblank
-unclutter -idle 0 &
 
-OFFLINE="/home/user/offline.html"
-URL="http://192.168.203.86:8080"
+unclutter -idle 0 -root &
 
-while true; do
-
-  if ping -c1 -W1 192.168.203.86 >/dev/null; then
-      chromium \
-        --kiosk \
-        --start-fullscreen \
-        --start-maximized \
-        --noerrdialogs \
-        --disable-infobars \
-        --disable-session-crashed-bubble \
-        --disable-features=TranslateUI \
-        --overscroll-history-navigation=0 \
-        "$URL"
-  else
-      chromium \
-        --kiosk \
-        --start-fullscreen \
-        --app="$OFFLINE"
-  fi
-
+while true
+do
+  chromium --kiosk --start-maximized "$URL"
   sleep 2
 done
 EOF
 
-chmod +x /home/$USER_NAME/.xinitrc
-chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xinitrc
+chmod +x /usr/local/bin/kiosk.sh
 
-# оффлайн страница
-cat >/home/$USER_NAME/offline.html <<'EOF'
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-body {
-  background:black;
-  color:white;
-  font-family:Arial;
-  text-align:center;
-  margin-top:20%;
-  font-size:40px;
-}
-</style>
-<script>
-setInterval(()=>{
-  fetch("http://192.168.203.86:8080",{mode:"no-cors"})
-    .then(()=>location.reload())
-    .catch(()=>{});
-},2000);
-</script>
-</head>
-<body>
-НЕТ СВЯЗИ
-</body>
-</html>
+echo "== systemd kiosk service =="
+cat >/etc/systemd/system/kiosk.service <<EOF
+[Unit]
+Description=Kiosk
+After=systemd-user-sessions.service network.target
+
+[Service]
+User=$USER_NAME
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=$HOME_DIR/.Xauthority
+ExecStart=/usr/bin/startx /usr/local/bin/kiosk.sh -- :0
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-chown $USER_NAME:$USER_NAME /home/$USER_NAME/offline.html
+echo "== URL command =="
+cat >/usr/local/bin/kiosk-set-url <<'EOF'
+#!/bin/bash
+echo "$1" | sudo tee /etc/kiosk_url
+echo "reboot"
+EOF
+chmod +x /usr/local/bin/kiosk-set-url
 
-echo "=== Готово. Перезагрузи систему ==="
+echo "== show IP command =="
+cat >/usr/local/bin/kiosk-ip <<'EOF'
+#!/bin/bash
+hostname -I
+EOF
+chmod +x /usr/local/bin/kiosk-ip
+
+echo "== static IP command =="
+cat >/usr/local/bin/kiosk-set-static-ip <<'EOF'
+#!/bin/bash
+IP=$1
+GW=$2
+DNS=${3:-8.8.8.8}
+IFACE=$(ip route | grep default | awk '{print $5}')
+
+sudo bash -c "cat >/etc/network/interfaces.d/$IFACE <<EOT
+auto $IFACE
+iface $IFACE inet static
+ address $IP
+ netmask 255.255.255.0
+ gateway $GW
+ dns-nameservers $DNS
+EOT"
+
+echo reboot
+EOF
+chmod +x /usr/local/bin/kiosk-set-static-ip
+
+echo "== enable service =="
+systemctl daemon-reload
+systemctl enable kiosk.service
+
+echo
+echo "INSTALL COMPLETE"
+echo "Reboot required:"
+echo "/sbin/reboot"
