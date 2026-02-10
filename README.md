@@ -44,7 +44,7 @@ ip a
 # СМЕНИТЬ АДРЕС ОТОБРАЖАЕМОЙ СТРАНИЦЫ
 
 ```
-NEW="**http://192.168.203.200:8080**"
+NEW="http://192.168.203.200:8080"
 sed -i "s|URL=\".*\"|URL=\"$NEW\"|" /home/user/.xinitrc
 sed -i "s|fetch(\".*\"|fetch(\"$NEW\"|" /home/user/offline.html
 /sbin/reboot
