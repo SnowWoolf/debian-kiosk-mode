@@ -1,156 +1,102 @@
 #!/bin/bash
+
 set -e
 
-echo "=== INSTALL KIOSK MODE ==="
+echo "=== Установка kiosk режима ==="
 
-USER_NAME=${SUDO_USER:-$(logname)}
-HOME_DIR="/home/$USER_NAME"
+KIOSK_USER="user"
+KIOSK_URL_FILE="/etc/kiosk-url"
+DEFAULT_URL="http://localhost:80/"
 
-export DEBIAN_FRONTEND=noninteractive
-
+# 1. Пакеты
 apt update
-apt install -y \
-xorg \
-xinit \
-openbox \
-chromium \
-unclutter \
-curl \
-fonts-dejavu-core
+apt install -y --no-install-recommends \
+    xserver-xorg \
+    x11-xserver-utils \
+    xinit \
+    openbox \
+    chromium \
+    unclutter \
+    wget
 
-############################################
-# URL файл
-############################################
-echo "http://192.168.0.100/" >/etc/kiosk_url
+# 2. Файл URL
+if [ ! -f "$KIOSK_URL_FILE" ]; then
+    echo "$DEFAULT_URL" > "$KIOSK_URL_FILE"
+fi
 
-############################################
-# страница offline
-############################################
-cat >/usr/local/share/kiosk-offline.html <<'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Нет связи</title>
-<style>
-body{
-background:#111;
-color:#fff;
-font-family:Arial;
-display:flex;
-justify-content:center;
-align-items:center;
-height:100vh;
-flex-direction:column;
-}
-button{
-font-size:28px;
-padding:20px 40px;
-margin-top:40px;
-}
-</style>
-</head>
-<body>
-<h1>Нет связи с климатическим компьютером</h1>
-<button onclick="location.reload()">Обновить страницу</button>
-</body>
-</html>
-EOF
-
-############################################
-# kiosk.sh
-############################################
-cat >/usr/local/bin/kiosk.sh <<'EOF'
+# 3. Скрипт запуска браузера
+cat > /usr/local/bin/kiosk-start <<'EOF'
 #!/bin/bash
 
-URL=$(cat /etc/kiosk_url)
+URL=$(cat /etc/kiosk-url)
 
-sleep 2
-
-xset s off
-xset -dpms
-xset s noblank
-
-unclutter -idle 0 -root &
-
-while true
-do
-    if curl -s --max-time 3 "$URL" >/dev/null; then
-        chromium \
-        --kiosk \
-        --start-fullscreen \
-        --noerrdialogs \
-        --disable-infobars \
-        --disable-session-crashed-bubble \
-        --disable-translate \
-        "$URL"
-    else
-        chromium \
-        --kiosk \
-        --start-fullscreen \
-        file:///usr/local/share/kiosk-offline.html
-    fi
-
+while true; do
+    ping -c1 -W1 8.8.8.8 >/dev/null 2>&1 && break
+    echo "Нет сети, ждём..."
     sleep 2
 done
+
+unclutter -idle 0 &
+chromium \
+  --kiosk \
+  --noerrdialogs \
+  --disable-infobars \
+  --disable-session-crashed-bubble \
+  --disable-features=TranslateUI \
+  --check-for-update-interval=31536000 \
+  "$URL"
 EOF
 
-chmod +x /usr/local/bin/kiosk.sh
+chmod +x /usr/local/bin/kiosk-start
 
-############################################
-# команда смены URL
-############################################
-cat >/usr/local/bin/kiosk-set-url <<'EOF'
+# 4. Команда смены URL
+cat > /usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
-echo "$1" | tee /etc/kiosk_url
-echo "URL изменён. Перезагрузка..."
+
+if [ -z "$1" ]; then
+  echo "Использование: kiosk-set-url http://IP:PORT/"
+  exit 1
+fi
+
+echo "$1" > /etc/kiosk-url
+echo "URL изменён на $1"
 reboot
 EOF
+
 chmod +x /usr/local/bin/kiosk-set-url
 
-############################################
-# openbox autostart
-############################################
-mkdir -p $HOME_DIR/.config/openbox
-
-cat >$HOME_DIR/.config/openbox/autostart <<'EOF'
-/usr/local/bin/kiosk.sh
-EOF
-
-chown -R $USER_NAME:$USER_NAME $HOME_DIR/.config
-
-############################################
-# xinitrc
-############################################
-cat >$HOME_DIR/.xinitrc <<'EOF'
-exec openbox-session
-EOF
-chown $USER_NAME:$USER_NAME $HOME_DIR/.xinitrc
-
-############################################
-# автозапуск X
-############################################
-cat >$HOME_DIR/.bash_profile <<'EOF'
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-startx
-fi
-EOF
-chown $USER_NAME:$USER_NAME $HOME_DIR/.bash_profile
-
-############################################
-# автологин tty1
-############################################
+# 5. autologin systemd override
 mkdir -p /etc/systemd/system/getty@tty1.service.d
-
-cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
+ExecStart=-/sbin/agetty --autologin $KIOSK_USER --noclear %I \$TERM
 EOF
 
-############################################
+# 6. автозапуск X
+USER_HOME="/home/$KIOSK_USER"
+
+cat > "$USER_HOME/.bash_profile" <<'EOF'
+if [[ -z $DISPLAY ]] && [[ $(tty) == /dev/tty1 ]]; then
+    startx
+fi
+EOF
+
+# 7. xinitrc
+cat > "$USER_HOME/.xinitrc" <<'EOF'
+xset -dpms
+xset s off
+xset s noblank
+/usr/local/bin/kiosk-start
+EOF
+
+chown $KIOSK_USER:$KIOSK_USER "$USER_HOME/.bash_profile"
+chown $KIOSK_USER:$KIOSK_USER "$USER_HOME/.xinitrc"
+
+echo "=== Готово ==="
+echo "Команда смены адреса:"
+echo "kiosk-set-url http://IP:PORT/"
 echo
-echo "=== ГОТОВО ==="
 echo "Перезагружаю..."
 sleep 2
-/sbin/reboot
+reboot
