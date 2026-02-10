@@ -6,7 +6,7 @@ USER_NAME="user"
 echo "=== Установка kiosk режима ==="
 
 apt update
-apt install -y chromium unclutter xdotool
+apt install -y xorg xinit chromium unclutter xdotool
 
 # автологин в tty1
 mkdir -p /etc/systemd/system/getty@tty1.service.d
