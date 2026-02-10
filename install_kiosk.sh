@@ -4,11 +4,10 @@ apt install -y sudo xorg xinit openbox chromium unclutter wmctrl xdotool fonts-d
 USER_NAME="user"
 HOME_DIR="/home/$USER_NAME"
 
-mkdir -p $HOME_DIR/.config/openbox
 mkdir -p /opt/kiosk
-
 echo "http://192.168.203.86:8080" > /opt/kiosk/url
 
+# ---------- OFFLINE PAGE ----------
 cat > /opt/kiosk/offline.html <<'EOF'
 <html>
 <head>
@@ -38,6 +37,7 @@ margin-top:40px;
 </html>
 EOF
 
+# ---------- KIOSK SCRIPT ----------
 cat > /opt/kiosk/kiosk.sh <<'EOF'
 #!/bin/bash
 
@@ -51,7 +51,8 @@ while true
 do
 URL=$(cat /opt/kiosk/url)
 
-if curl -m 2 -I "$URL" >/dev/null 2>&1
+# проверяем доступность через GET
+if curl -m 3 -L "$URL" >/dev/null 2>&1
 then
     chromium \
     --kiosk "$URL" \
@@ -61,17 +62,19 @@ then
     --disable-session-crashed-bubble \
     --disable-translate \
     --disable-features=TranslateUI \
-    --overscroll-history-navigation=0 \
-    --check-for-update-interval=31536000
+    --overscroll-history-navigation=0
 else
     chromium --kiosk file:///opt/kiosk/offline.html
 fi
 
-sleep 2
+sleep 3
 done
 EOF
 
 chmod +x /opt/kiosk/kiosk.sh
+
+# ---------- OPENBOX ----------
+mkdir -p $HOME_DIR/.config/openbox
 
 cat > $HOME_DIR/.config/openbox/autostart <<'EOF'
 /opt/kiosk/kiosk.sh &
@@ -88,8 +91,8 @@ fi
 EOF
 
 chown -R $USER_NAME:$USER_NAME $HOME_DIR
-chmod +x $HOME_DIR/.bash_profile
 
+# ---------- AUTOLOGIN ----------
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<EOF
@@ -98,6 +101,7 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
 EOF
 
+# ---------- CHANGE URL COMMAND ----------
 cat > /usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
 echo "$1" > /opt/kiosk/url
@@ -106,5 +110,5 @@ EOF
 
 chmod +x /usr/local/bin/kiosk-set-url
 
-echo "===== ГОТОВО ====="
-echo "Перезагрузи систему: reboot"
+echo "ГОТОВО. ПЕРЕЗАГРУЗИ:"
+echo "reboot"
