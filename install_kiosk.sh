@@ -102,9 +102,9 @@ chmod +x /usr/local/bin/kiosk.sh
 ############################################
 cat >/usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
-echo "$1" | sudo tee /etc/kiosk_url
+echo "$1" | tee /etc/kiosk_url
 echo "URL изменён. Перезагрузка..."
-sudo reboot
+reboot
 EOF
 chmod +x /usr/local/bin/kiosk-set-url
 
