@@ -5,7 +5,7 @@ USER_NAME="user"
 HOME_DIR="/home/$USER_NAME"
 
 mkdir -p /opt/kiosk
-echo "http://192.168.203.86:8080" > /opt/kiosk/url
+echo "https://allmonitoring.ru/" > /opt/kiosk/url
 
 # ---------- OFFLINE PAGE ----------
 cat > /opt/kiosk/offline.html <<'EOF'
