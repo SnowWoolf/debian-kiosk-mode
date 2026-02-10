@@ -1,40 +1,42 @@
 #!/bin/bash
 set -e
 
-USER_NAME=$(logname)
+USER_NAME=${SUDO_USER:-user}
 HOME_DIR="/home/$USER_NAME"
+URL="http://192.168.203.86:8080"
 
-SERVER_IP="192.168.203.86"
-URL="http://192.168.203.86:8080/"
-
-echo "install packages"
+echo "INSTALL PACKAGES"
 apt update
 apt install -y chromium unclutter wmctrl xdotool
 
-echo "disable sleep"
+echo "DISABLE SLEEP"
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 
-echo "create kiosk page"
-mkdir -p /opt/kiosk
+echo "DISABLE KEYRING"
+apt purge -y gnome-keyring seahorse || true
+rm -rf $HOME_DIR/.local/share/keyrings
 
-cat >/opt/kiosk/offline.html <<EOF
+echo "CREATE OFFLINE PAGE"
+
+cat >/opt/kiosk_offline.html <<EOF
 <html>
 <head>
 <meta charset="utf-8">
 <style>
 body{
- background:black;
- color:white;
- font-family:Arial;
- display:flex;
- align-items:center;
- justify-content:center;
- height:100vh;
- flex-direction:column;
+background:#111;
+color:white;
+font-family:Arial;
+display:flex;
+flex-direction:column;
+align-items:center;
+justify-content:center;
+height:100vh;
 }
 button{
- font-size:30px;
- padding:20px 40px;
+font-size:28px;
+padding:20px 40px;
+margin-top:40px;
 }
 </style>
 </head>
@@ -45,69 +47,76 @@ button{
 </html>
 EOF
 
-echo "kiosk launcher"
+echo "CREATE KIOSK SCRIPT"
 
-cat >/usr/local/bin/kiosk.sh <<EOF
+cat >/usr/local/bin/kiosk.sh <<'EOF'
 #!/bin/bash
 
-export DISPLAY=:0
+URL_FILE="/etc/kiosk_url"
+DEFAULT_URL="http://192.168.203.86:8080"
 
+[ -f "$URL_FILE" ] && URL=$(cat $URL_FILE) || URL=$DEFAULT_URL
+
+xset s off
+xset -dpms
+xset s noblank
+xsetroot -cursor_name left_ptr
 unclutter -idle 0 -root &
+
+sleep 2
+
+chromium \
+ --kiosk \
+ --noerrdialogs \
+ --disable-infobars \
+ --disable-session-crashed-bubble \
+ --disable-translate \
+ --overscroll-history-navigation=0 \
+ --disable-pinch \
+ "$URL" &
+
+sleep 5
 
 while true
 do
- if ping -c1 -W1 $SERVER_IP >/dev/null
+ if ! ping -c1 -W1 $(echo $URL | cut -d/ -f3 | cut -d: -f1) >/dev/null
  then
-   chromium \
-     --kiosk \
-     --start-fullscreen \
-     --noerrdialogs \
-     --disable-infobars \
-     --disable-session-crashed-bubble \
-     --disable-translate \
-     $URL
- else
-   chromium \
-     --kiosk \
-     --app=file:///opt/kiosk/offline.html
+   wmctrl -a Chromium
+   xdotool key Ctrl+l
+   xdotool type "file:///opt/kiosk_offline.html"
+   xdotool key Return
+   sleep 5
  fi
 
- sleep 2
+ sleep 5
 done
 EOF
 
 chmod +x /usr/local/bin/kiosk.sh
 
-echo "systemd service"
+echo "AUTOSTART XFCE"
 
-cat >/etc/systemd/system/kiosk.service <<EOF
-[Unit]
-Description=Kiosk
-After=graphical.target
+mkdir -p $HOME_DIR/.config/autostart
 
-[Service]
-User=$USER_NAME
-Environment=DISPLAY=:0
-ExecStart=/usr/local/bin/kiosk.sh
-Restart=always
-
-[Install]
-WantedBy=graphical.target
+cat >$HOME_DIR/.config/autostart/kiosk.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Exec=/usr/local/bin/kiosk.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=Kiosk
 EOF
 
-systemctl daemon-reload
-systemctl enable kiosk.service
+chown -R $USER_NAME:$USER_NAME $HOME_DIR/.config
 
-echo "autologin xfce"
+echo "URL COMMAND"
 
-mkdir -p /etc/lightdm/lightdm.conf.d
-
-cat >/etc/lightdm/lightdm.conf.d/50-autologin.conf <<EOF
-[Seat:*]
-autologin-user=$USER_NAME
-autologin-session=xfce
+cat >/usr/local/bin/kiosk-set-url <<'EOF'
+#!/bin/bash
+echo "$1" | sudo tee /etc/kiosk_url
 EOF
+chmod +x /usr/local/bin/kiosk-set-url
 
 echo "DONE"
-echo "REBOOT NOW"
-/sbin/reboot
+echo "REBOOT REQUIRED"
