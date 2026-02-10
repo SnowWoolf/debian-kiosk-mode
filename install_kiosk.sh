@@ -1,16 +1,14 @@
 apt update
-apt install -y xorg xinit openbox chromium unclutter wmctrl xdotool fonts-dejavu-core curl
+apt install -y sudo xorg xinit openbox chromium unclutter wmctrl xdotool fonts-dejavu-core curl
 
-useradd -m kiosk
-passwd -d kiosk
+USER_NAME="user"
+HOME_DIR="/home/$USER_NAME"
 
-mkdir -p /home/kiosk/.config/openbox
+mkdir -p $HOME_DIR/.config/openbox
 mkdir -p /opt/kiosk
 
-# ---------- URL ----------
 echo "http://192.168.203.86:8080" > /opt/kiosk/url
 
-# ---------- Страница нет связи ----------
 cat > /opt/kiosk/offline.html <<'EOF'
 <html>
 <head>
@@ -40,7 +38,6 @@ margin-top:40px;
 </html>
 EOF
 
-# ---------- kiosk script ----------
 cat > /opt/kiosk/kiosk.sh <<'EOF'
 #!/bin/bash
 
@@ -48,7 +45,7 @@ xset -dpms
 xset s off
 xset s noblank
 
-unclutter -idle 0.1 -root &
+unclutter -idle 0 -root &
 
 while true
 do
@@ -58,6 +55,7 @@ if curl -m 2 -I "$URL" >/dev/null 2>&1
 then
     chromium \
     --kiosk "$URL" \
+    --start-fullscreen \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \
@@ -75,38 +73,31 @@ EOF
 
 chmod +x /opt/kiosk/kiosk.sh
 
-# ---------- openbox autostart ----------
-cat > /home/kiosk/.config/openbox/autostart <<'EOF'
+cat > $HOME_DIR/.config/openbox/autostart <<'EOF'
 /opt/kiosk/kiosk.sh &
 EOF
 
-chown -R kiosk:kiosk /home/kiosk
+cat > $HOME_DIR/.xinitrc <<'EOF'
+exec openbox-session
+EOF
 
-# ---------- startx on login ----------
-cat >> /home/kiosk/.bash_profile <<'EOF'
+cat > $HOME_DIR/.bash_profile <<'EOF'
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
 startx
 fi
 EOF
 
-# ---------- xinit ----------
-cat > /home/kiosk/.xinitrc <<'EOF'
-exec openbox-session
-EOF
+chown -R $USER_NAME:$USER_NAME $HOME_DIR
+chmod +x $HOME_DIR/.bash_profile
 
-chown kiosk:kiosk /home/kiosk/.bash_profile
-chown kiosk:kiosk /home/kiosk/.xinitrc
-
-# ---------- autologin tty ----------
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 
-cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<'EOF'
+cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty --autologin kiosk --noclear %I $TERM
+ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
 EOF
 
-# ---------- команда смены URL ----------
 cat > /usr/local/bin/kiosk-set-url <<'EOF'
 #!/bin/bash
 echo "$1" > /opt/kiosk/url
@@ -116,4 +107,4 @@ EOF
 chmod +x /usr/local/bin/kiosk-set-url
 
 echo "===== ГОТОВО ====="
-echo "Перезагрузи систему"
+echo "Перезагрузи систему: reboot"
