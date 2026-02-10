@@ -1,40 +1,46 @@
 #!/bin/bash
-set -e
 
-USER_NAME=${SUDO_USER:-user}
-HOME_DIR="/home/$USER_NAME"
-URL_DEFAULT="http://192.168.203.8"
+# ===== НАСТРОЙКИ =====
+SERVER_IP="192.168.203.86"
+URL="http://192.168.203.86:8080"
+USER_NAME="user"
 
-echo "INSTALL"
+# ===== УСТАНОВКА ПАКЕТОВ =====
 apt update
-apt install -y chromium xdotool wmctrl
+apt install -y \
+  chromium \
+  xorg \
+  xinit \
+  openbox \
+  unclutter \
+  feh \
+  fonts-dejavu \
+  curl
 
-echo "DISABLE KEYRING"
-apt purge -y gnome-keyring seahorse || true
-rm -rf $HOME_DIR/.local/share/keyrings
+mkdir -p /opt/kiosk
 
-echo "DISABLE SLEEP"
-systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
-
-echo "HIDE CURSOR HARD"
-mkdir -p /etc/X11/xorg.conf.d
-cat >/etc/X11/xorg.conf.d/99-hide-cursor.conf <<EOF
-Section "Device"
- Identifier "dummy"
- Option "HWCursor" "off"
-EndSection
-EOF
-
-echo "OFFLINE PAGE"
-cat >/opt/kiosk_offline.html <<EOF
+# ===== OFFLINE СТРАНИЦА =====
+cat >/opt/kiosk/offline.html <<EOF
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-body{background:#111;color:white;font-family:Arial;
-display:flex;align-items:center;justify-content:center;
-height:100vh;flex-direction:column}
-button{font-size:28px;padding:20px 40px;margin-top:40px}
+body {
+  background:black;
+  color:white;
+  font-family:sans-serif;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  height:100vh;
+  flex-direction:column;
+}
+button {
+  font-size:32px;
+  padding:20px 40px;
+  margin-top:40px;
+}
 </style>
 </head>
 <body>
@@ -44,84 +50,73 @@ button{font-size:28px;padding:20px 40px;margin-top:40px}
 </html>
 EOF
 
-echo "KIOSK SCRIPT"
-
-cat >/usr/local/bin/kiosk.sh <<'EOF'
+# ===== СКРИПТ ЗАПУСКА KIOSK =====
+cat >/opt/kiosk/start.sh <<EOF
 #!/bin/bash
 
-URL_FILE="/etc/kiosk_url"
-DEFAULT_URL="http://192.168.203.8"
-[ -f "$URL_FILE" ] && URL=$(cat $URL_FILE) || URL=$DEFAULT_URL
-
-HOST=$(echo $URL | cut -d/ -f3 | cut -d: -f1)
-
-xset s off
 xset -dpms
+xset s off
 xset s noblank
-xsetroot -cursor_name none
 
-sleep 2
-
-start_browser(){
- pkill chromium || true
- chromium \
-  --kiosk \
-  --app="$URL" \
-  --noerrdialogs \
-  --disable-infobars \
-  --disable-session-crashed-bubble \
-  --disable-translate \
-  --disable-features=TranslateUI &
-}
-
-show_offline(){
- pkill chromium || true
- chromium \
-  --kiosk \
-  --app=file:///opt/kiosk_offline.html &
-}
-
-start_browser
+unclutter -idle 0 &
 
 while true
 do
- if ping -c1 -W1 "$HOST" >/dev/null
- then
-   if ! pgrep -f "$URL" >/dev/null; then
-      start_browser
-   fi
- else
-   if ! pgrep -f kiosk_offline >/dev/null; then
-      show_offline
-   fi
- fi
+  if ping -c1 -W1 $SERVER_IP >/dev/null
+  then
+    chromium \
+      --kiosk \
+      --noerrdialogs \
+      --disable-infobars \
+      --disable-session-crashed-bubble \
+      --disable-restore-session-state \
+      --disable-features=TranslateUI \
+      --overscroll-history-navigation=0 \
+      $URL
+  else
+    chromium --kiosk file:///opt/kiosk/offline.html
+  fi
 
- sleep 3
+  sleep 2
 done
 EOF
 
-chmod +x /usr/local/bin/kiosk.sh
+chmod +x /opt/kiosk/start.sh
 
-echo "AUTOSTART XFCE"
-
-mkdir -p $HOME_DIR/.config/autostart
-cat >$HOME_DIR/.config/autostart/kiosk.desktop <<EOF
-[Desktop Entry]
-Type=Application
-Exec=/usr/local/bin/kiosk.sh
-X-GNOME-Autostart-enabled=true
-Name=Kiosk
-EOF
-
-chown -R $USER_NAME:$USER_NAME $HOME_DIR/.config
-
-echo "URL COMMAND"
-cat >/usr/local/bin/kiosk-set-url <<'EOF'
+# ===== .xinitrc =====
+cat >/home/$USER_NAME/.xinitrc <<EOF
 #!/bin/bash
-echo "$1" | sudo tee /etc/kiosk_url
+exec openbox-session &
+sleep 1
+/opt/kiosk/start.sh
 EOF
-chmod +x /usr/local/bin/kiosk-set-url
 
-echo "DONE"
-echo "REBOOT"
+chmod +x /home/$USER_NAME/.xinitrc
+chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xinitrc
+
+# ===== АВТОЛОГИН tty1 =====
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+
+cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
+EOF
+
+# ===== АВТОСТАРТ X =====
+cat >>/home/$USER_NAME/.bash_profile <<'EOF'
+
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  startx
+  logout
+fi
+EOF
+
+chown $USER_NAME:$USER_NAME /home/$USER_NAME/.bash_profile
+
+# ===== ОТКЛЮЧАЕМ DISPLAY MANAGER =====
+systemctl set-default multi-user.target
+
+echo "ГОТОВО. Перезагрузка..."
+sleep 2
 /sbin/reboot
