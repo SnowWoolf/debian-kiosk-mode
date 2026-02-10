@@ -8,8 +8,8 @@ export PATH=$PATH:/usr/sbin:/sbin:/bin:/usr/bin
 USER_NAME=$(logname)
 HOME_DIR="/home/$USER_NAME"
 
-SERVER_IP="192.168.203.8"
-URL="http://192.168.203.8"
+SERVER_IP="192.168.203.86"
+URL="http://192.168.203.86:8080"
 
 apt update
 apt install -y \
