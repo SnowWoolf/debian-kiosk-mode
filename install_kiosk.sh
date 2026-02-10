@@ -3,71 +3,50 @@ set -e
 
 echo "=== INSTALL KIOSK MODE ==="
 
-export PATH=$PATH:/usr/sbin:/sbin:/bin:/usr/bin
-
-USER_NAME=$(logname)
+USER_NAME=${SUDO_USER:-$(logname)}
 HOME_DIR="/home/$USER_NAME"
 
-SERVER_IP="192.168.203.86"
-URL="http://192.168.203.86:8080"
+export DEBIAN_FRONTEND=noninteractive
 
 apt update
 apt install -y \
-xorg xinit openbox chromium \
-unclutter wmctrl xdotool \
-fonts-dejavu-core locales
+xorg \
+xinit \
+openbox \
+chromium \
+unclutter \
+curl \
+fonts-dejavu-core
 
-# locale
-echo "ru_RU.UTF-8 UTF-8" >> /etc/locale.gen || true
-/usr/sbin/locale-gen ru_RU.UTF-8
-update-locale LANG=ru_RU.UTF-8
+############################################
+# URL файл
+############################################
+echo "http://192.168.0.100/" >/etc/kiosk_url
 
-# отключаем sleep
-systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
-
-# X настройки
-mkdir -p /etc/X11/xorg.conf.d
-
-cat >/etc/X11/xorg.conf.d/10-monitor.conf <<EOF
-Section "ServerFlags"
- Option "BlankTime" "0"
- Option "StandbyTime" "0"
- Option "SuspendTime" "0"
- Option "OffTime" "0"
-EndSection
-EOF
-
-# скрыть курсор полностью
-cat >/etc/X11/xorg.conf.d/99-hide-cursor.conf <<EOF
-Section "InputClass"
- Identifier "HideCursor"
- MatchIsPointer "on"
- Option "CursorVisible" "false"
-EndSection
-EOF
-
-# overlay страница
-mkdir -p /opt/kiosk
-
-cat >/opt/kiosk/offline.html <<EOF
+############################################
+# страница offline
+############################################
+cat >/usr/local/share/kiosk-offline.html <<'EOF'
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<title>Нет связи</title>
 <style>
-body {
- background:black;
- color:white;
- font-family:Arial;
- display:flex;
- align-items:center;
- justify-content:center;
- height:100vh;
- flex-direction:column;
+body{
+background:#111;
+color:#fff;
+font-family:Arial;
+display:flex;
+justify-content:center;
+align-items:center;
+height:100vh;
+flex-direction:column;
 }
 button{
- font-size:28px;
- padding:20px 40px;
- margin-top:40px;
+font-size:28px;
+padding:20px 40px;
+margin-top:40px;
 }
 </style>
 </head>
@@ -78,56 +57,89 @@ button{
 </html>
 EOF
 
-# kiosk launcher
-cat >/usr/local/bin/kiosk.sh <<EOF
+############################################
+# kiosk.sh
+############################################
+cat >/usr/local/bin/kiosk.sh <<'EOF'
 #!/bin/bash
 
-unclutter -idle 0.1 -root &
+URL=$(cat /etc/kiosk_url)
+
+sleep 2
 
 xset s off
 xset -dpms
 xset s noblank
 
+unclutter -idle 0 -root &
+
 while true
 do
- if ping -c1 -W1 $SERVER_IP >/dev/null
- then
-   chromium --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble "$URL"
- else
-   chromium --kiosk --app=file:///opt/kiosk/offline.html
- fi
- sleep 2
+    if curl -s --max-time 3 "$URL" >/dev/null; then
+        chromium \
+        --kiosk \
+        --start-fullscreen \
+        --noerrdialogs \
+        --disable-infobars \
+        --disable-session-crashed-bubble \
+        --disable-translate \
+        "$URL"
+    else
+        chromium \
+        --kiosk \
+        --start-fullscreen \
+        file:///usr/local/share/kiosk-offline.html
+    fi
+
+    sleep 2
 done
 EOF
 
 chmod +x /usr/local/bin/kiosk.sh
 
+############################################
+# команда смены URL
+############################################
+cat >/usr/local/bin/kiosk-set-url <<'EOF'
+#!/bin/bash
+echo "$1" | sudo tee /etc/kiosk_url
+echo "URL изменён. Перезагрузка..."
+sudo reboot
+EOF
+chmod +x /usr/local/bin/kiosk-set-url
+
+############################################
 # openbox autostart
+############################################
 mkdir -p $HOME_DIR/.config/openbox
 
-cat >$HOME_DIR/.config/openbox/autostart <<EOF
+cat >$HOME_DIR/.config/openbox/autostart <<'EOF'
 /usr/local/bin/kiosk.sh
 EOF
 
 chown -R $USER_NAME:$USER_NAME $HOME_DIR/.config
 
-# xinit
-cat >$HOME_DIR/.xinitrc <<EOF
+############################################
+# xinitrc
+############################################
+cat >$HOME_DIR/.xinitrc <<'EOF'
 exec openbox-session
 EOF
-
 chown $USER_NAME:$USER_NAME $HOME_DIR/.xinitrc
 
+############################################
 # автозапуск X
-cat >$HOME_DIR/.bash_profile <<EOF
-if [ -z "\$DISPLAY" ] && [ "\$(tty)" = "/dev/tty1" ]; then
- startx
+############################################
+cat >$HOME_DIR/.bash_profile <<'EOF'
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+startx
 fi
 EOF
-
 chown $USER_NAME:$USER_NAME $HOME_DIR/.bash_profile
 
-# автологин
+############################################
+# автологин tty1
+############################################
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 
 cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
@@ -136,7 +148,9 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
 EOF
 
+############################################
 echo
-echo "=== READY ==="
-echo "reboot"
+echo "=== ГОТОВО ==="
+echo "Перезагружаю..."
+sleep 2
 /sbin/reboot
