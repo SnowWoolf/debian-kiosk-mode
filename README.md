@@ -19,6 +19,20 @@ wget -qO- https://raw.githubusercontent.com/SnowWoolf/debian-kiosk-mode/main/ins
 
 Терминал автоматически загрузится в киоск.
 
+**Отключить баннер переводчика chrome:**
+mkdir -p /etc/chromium/policies/managed
+nano /etc/chromium/policies/managed/kiosk.json
+Вставить:
+```
+{
+  "TranslateEnabled": false,
+  "TranslateUIEnabled": false,
+  "DefaultTranslateSetting": 2
+}
+```
+Это полностью отключает переводчик на уровне политики.
+
+
 ---
 
 # ОТКРЫТЬ ТЕРМИНАЛ С КЛАВИАТУРЫ
@@ -43,11 +57,9 @@ ip a
 
 # СМЕНИТЬ АДРЕС ОТОБРАЖАЕМОЙ СТРАНИЦЫ
 
+С правами su:
 ```
-NEW="http://192.168.203.200:8080"
-sed -i "s|URL=\".*\"|URL=\"$NEW\"|" /home/user/.xinitrc
-sed -i "s|fetch(\".*\"|fetch(\"$NEW\"|" /home/user/offline.html
-/sbin/reboot
+kiosk-set-url http://192.168.203.200:8080"
 ```
 
 
