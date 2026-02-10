@@ -1,122 +1,99 @@
 #!/bin/bash
+set -e
 
-# ===== НАСТРОЙКИ =====
+### ===== НАСТРОЙКИ =====
+USER_NAME="user"
 SERVER_IP="192.168.203.86"
 URL="http://192.168.203.86:8080"
-USER_NAME="user"
 
-# ===== УСТАНОВКА ПАКЕТОВ =====
+echo "=== INSTALL KIOSK ==="
+
 apt update
 apt install -y \
-  chromium \
-  xorg \
-  xinit \
-  openbox \
-  unclutter \
-  feh \
-  fonts-dejavu \
-  curl
+    xorg \
+    openbox \
+    chromium \
+    unclutter \
+    xdotool \
+    wmctrl \
+    curl
 
-mkdir -p /opt/kiosk
+### ===== АВТОЛОГИН В TTY1 =====
+mkdir -p /etc/systemd/system/getty@tty1.service.d
 
-# ===== OFFLINE СТРАНИЦА =====
-cat >/opt/kiosk/offline.html <<EOF
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-body {
-  background:black;
-  color:white;
-  font-family:sans-serif;
-  display:flex;
-  justify-content:center;
-  align-items:center;
-  height:100vh;
-  flex-direction:column;
-}
-button {
-  font-size:32px;
-  padding:20px 40px;
-  margin-top:40px;
-}
-</style>
-</head>
-<body>
-<h1>Нет связи с климатическим компьютером</h1>
-<button onclick="location.reload()">Обновить страницу</button>
-</body>
-</html>
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
 EOF
 
-# ===== СКРИПТ ЗАПУСКА KIOSK =====
-cat >/opt/kiosk/start.sh <<EOF
+### ===== .bash_profile автозапуск X =====
+USER_HOME="/home/$USER_NAME"
+
+cat > $USER_HOME/.bash_profile <<'EOF'
+if [[ -z $DISPLAY ]] && [[ $(tty) == /dev/tty1 ]]; then
+    startx
+fi
+EOF
+
+chown $USER_NAME:$USER_NAME $USER_HOME/.bash_profile
+
+### ===== XINIT =====
+cat > $USER_HOME/.xinitrc <<EOF
 #!/bin/bash
 
 xset -dpms
 xset s off
 xset s noblank
 
-unclutter -idle 0 &
+unclutter -idle 0.1 -root &
 
-while true
-do
-  if ping -c1 -W1 $SERVER_IP >/dev/null
-  then
-    chromium \
-      --kiosk \
-      --noerrdialogs \
-      --disable-infobars \
-      --disable-session-crashed-bubble \
-      --disable-restore-session-state \
-      --disable-features=TranslateUI \
-      --overscroll-history-navigation=0 \
-      $URL
-  else
-    chromium --kiosk file:///opt/kiosk/offline.html
-  fi
+openbox-session &
 
-  sleep 2
+sleep 2
+
+/usr/bin/chromium \
+  --kiosk "$URL" \
+  --noerrdialogs \
+  --disable-infobars \
+  --disable-session-crashed-bubble \
+  --disable-features=TranslateUI \
+  --disable-pinch \
+  --overscroll-history-navigation=0 \
+  --check-for-update-interval=31536000 \
+  --simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT' &
+
+### ===== СКРИПТ КОНТРОЛЯ СВЯЗИ =====
+while true; do
+    if ping -c1 -W1 $SERVER_IP >/dev/null; then
+        xdotool search --name "NO_LINK" windowkill 2>/dev/null || true
+    else
+        if ! xdotool search --name "NO_LINK" >/dev/null 2>&1; then
+            xmessage -center "Нет связи с климатическим компьютером
+
+Нажмите ОБНОВИТЬ" \
+            -buttons "Обновить:0" \
+            -title "NO_LINK" &
+        fi
+    fi
+    sleep 5
 done
 EOF
 
-chmod +x /opt/kiosk/start.sh
+chmod +x $USER_HOME/.xinitrc
+chown $USER_NAME:$USER_NAME $USER_HOME/.xinitrc
 
-# ===== .xinitrc =====
-cat >/home/$USER_NAME/.xinitrc <<EOF
-#!/bin/bash
-exec openbox-session &
-sleep 1
-/opt/kiosk/start.sh
+### ===== ОТКЛЮЧИТЬ SCREEN BLANKING =====
+mkdir -p /etc/X11/xorg.conf.d
+
+cat > /etc/X11/xorg.conf.d/10-monitor.conf <<EOF
+Section "ServerFlags"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
 EOF
 
-chmod +x /home/$USER_NAME/.xinitrc
-chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xinitrc
-
-# ===== АВТОЛОГИН tty1 =====
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-
-cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $USER_NAME --noclear %I \$TERM
-EOF
-
-# ===== АВТОСТАРТ X =====
-cat >>/home/$USER_NAME/.bash_profile <<'EOF'
-
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  startx
-  logout
-fi
-EOF
-
-chown $USER_NAME:$USER_NAME /home/$USER_NAME/.bash_profile
-
-# ===== ОТКЛЮЧАЕМ DISPLAY MANAGER =====
-systemctl set-default multi-user.target
-
-echo "ГОТОВО. Перезагрузка..."
-sleep 2
-/sbin/reboot
+echo "=== DONE ==="
+echo "Reboot system"
